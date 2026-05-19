@@ -88,8 +88,8 @@
 //! ```
 //!
 //! The FMM and graph solvers are inherently sequential priority-queue
-//! algorithms, but cost field construction and post-processing (isochrones)
-//! benefit from parallelism on large grids.
+//! algorithms. The `parallel` feature currently accelerates cost field
+//! construction; isochrone extraction remains sequential.
 
 pub mod cost;
 pub mod error;
