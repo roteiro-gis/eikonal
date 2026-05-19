@@ -112,6 +112,8 @@ pub fn solve(cost: &CostField, source: (usize, usize)) -> Result<SolveResult> {
 /// # Errors
 ///
 /// Returns `OutOfBounds` if any source is outside the grid.
+/// Returns `InvalidParameter` if `sources` is empty or any source is on an
+/// impassable cell.
 pub fn solve_multi(cost: &CostField, sources: &[(usize, usize)]) -> Result<SolveResult> {
     solve_inner(cost, sources, None)
 }
@@ -137,6 +139,9 @@ fn solve_inner(
     if h == 0 || w == 0 {
         return Err(Error::InvalidParameter("cost field must be non-empty"));
     }
+    if sources.is_empty() {
+        return Err(Error::InvalidParameter("at least one source is required"));
+    }
 
     for &(sr, sc) in sources {
         if sr >= h || sc >= w {
@@ -146,6 +151,9 @@ fn solve_inner(
                 height: h,
                 width: w,
             });
+        }
+        if cost.at(sr, sc) <= 0.0 {
+            return Err(Error::InvalidParameter("source cell must be traversable"));
         }
     }
     if let Some((tr, tc)) = target {
@@ -333,6 +341,20 @@ mod tests {
     fn solve_source_out_of_bounds() {
         let cost = CostField::uniform(10, 10);
         assert!(solve(&cost, (10, 0)).is_err());
+    }
+
+    #[test]
+    fn empty_sources_rejected() {
+        let cost = CostField::uniform(10, 10);
+        assert!(solve_multi(&cost, &[]).is_err());
+    }
+
+    #[test]
+    fn impassable_source_rejected() {
+        let mut data = Array2::ones((5, 5));
+        data[[2, 2]] = 0.0;
+        let cost = CostField::from_array(data).unwrap();
+        assert!(solve(&cost, (2, 2)).is_err());
     }
 
     #[test]

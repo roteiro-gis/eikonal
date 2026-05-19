@@ -198,6 +198,11 @@ pub fn solve(
 }
 
 /// Solve from multiple terrain sources simultaneously.
+///
+/// # Errors
+///
+/// Returns `InvalidParameter` if `sources` is empty, if any source is on a
+/// non-finite DEM cell, or if any source is blocked by `cost_field`.
 pub fn solve_multi(
     dem: &Array2<f64>,
     config: TerrainConfig,
@@ -231,6 +236,9 @@ fn solve_terrain_inner(
     if h < 3 || w < 3 {
         return Err(Error::InvalidParameter("DEM must be at least 3x3"));
     }
+    if sources.is_empty() {
+        return Err(Error::InvalidParameter("at least one source is required"));
+    }
     let dem_traversable: Vec<bool> = dem.iter().map(|z| z.is_finite()).collect();
 
     if let Some(cf) = cost_field {
@@ -258,6 +266,11 @@ fn solve_terrain_inner(
             return Err(Error::InvalidParameter(
                 "source DEM cell must have finite elevation",
             ));
+        }
+        if let Some(cf) = cost_field {
+            if cf.at(sr, sc) <= 0.0 {
+                return Err(Error::InvalidParameter("source cell must be traversable"));
+            }
         }
     }
     if let Some((tr, tc)) = target {
@@ -537,6 +550,23 @@ mod tests {
         let result = solve(&dem, config, Some(&cf), (5, 0)).unwrap();
         // Can't cross the wall
         assert!(result.distance()[[5, 9]].is_infinite());
+    }
+
+    #[test]
+    fn empty_sources_rejected() {
+        let dem = flat_dem(5, 5);
+        let config = TerrainConfig::symmetric(1.0);
+        assert!(solve_multi(&dem, config, None, &[]).is_err());
+    }
+
+    #[test]
+    fn cost_field_impassable_source_rejected() {
+        let dem = flat_dem(5, 5);
+        let config = TerrainConfig::symmetric(1.0);
+        let mut cf_data = Array2::ones((5, 5));
+        cf_data[[2, 2]] = 0.0;
+        let cf = CostField::from_array(cf_data).unwrap();
+        assert!(solve(&dem, config, Some(&cf), (2, 2)).is_err());
     }
 
     #[test]
