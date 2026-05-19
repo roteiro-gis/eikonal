@@ -178,6 +178,10 @@ pub struct TerrainPath {
 /// `sqrt(horizontal² + dz²)`, and optional slope penalties make uphill or
 /// downhill traversal more expensive.
 ///
+/// Non-finite DEM elevations (`NaN`, `+inf`, `-inf`) are treated as nodata
+/// barriers. Routes never enter them, and source/early-target cells must have
+/// finite elevation.
+///
 /// # Arguments
 /// * `dem` - Digital Elevation Model as a 2D array
 /// * `config` - Terrain parameters (cell size, slope penalties)
@@ -226,6 +230,7 @@ fn solve_terrain_inner(
     if h < 3 || w < 3 {
         return Err(Error::InvalidParameter("DEM must be at least 3x3"));
     }
+    let dem_traversable: Vec<bool> = dem.iter().map(|z| z.is_finite()).collect();
 
     if let Some(cf) = cost_field {
         let cf_dim = cf.dim();
@@ -248,6 +253,11 @@ fn solve_terrain_inner(
                 width: w,
             });
         }
+        if !dem_traversable[sr * w + sc] {
+            return Err(Error::InvalidParameter(
+                "source DEM cell must have finite elevation",
+            ));
+        }
     }
     if let Some((tr, tc)) = target {
         if tr >= h || tc >= w {
@@ -257,6 +267,11 @@ fn solve_terrain_inner(
                 height: h,
                 width: w,
             });
+        }
+        if !dem_traversable[tr * w + tc] {
+            return Err(Error::InvalidParameter(
+                "target DEM cell must have finite elevation",
+            ));
         }
     }
 
@@ -272,10 +287,6 @@ fn solve_terrain_inner(
         dist[idx] = 0.0;
         heap.push(Node { cost: 0.0, idx });
     }
-
-    let cell_size = config.cell_size;
-    let uphill = config.uphill_factor;
-    let downhill = config.downhill_factor;
 
     while let Some(node) = heap.pop() {
         if visited[node.idx] {
@@ -308,37 +319,31 @@ fn solve_terrain_inner(
                 continue;
             }
 
+            if !dem_traversable[n_idx] {
+                continue;
+            }
+
             if let Some(cf) = cost_field {
                 if cf.at(nr, nc) <= 0.0 {
                     continue;
                 }
             }
 
-            let horiz_dist = if dr.unsigned_abs() + dc.unsigned_abs() == 2 {
-                cell_size * std::f64::consts::SQRT_2
-            } else {
-                cell_size
-            };
+            let edge = edge_cost(
+                dem,
+                cost_field,
+                config,
+                (row, col),
+                (nr, nc),
+                dr.unsigned_abs() + dc.unsigned_abs() == 2,
+            )?;
 
-            let dz = dem[[nr, nc]] - dem[[row, col]];
-            let surface_dist = (horiz_dist * horiz_dist + dz * dz).sqrt();
-
-            let slope_mult = if dz > 0.0 {
-                uphill
-            } else if dz < 0.0 {
-                downhill
-            } else {
-                1.0
-            };
-
-            let terrain_mult = if let Some(cf) = cost_field {
-                cf.at(nr, nc)
-            } else {
-                1.0
-            };
-
-            let edge_cost = surface_dist * slope_mult * terrain_mult;
-            let new_dist = dist[node.idx] + edge_cost;
+            let new_dist = dist[node.idx] + edge;
+            if !new_dist.is_finite() {
+                return Err(Error::InvalidParameter(
+                    "terrain path costs must remain finite",
+                ));
+            }
 
             if new_dist < dist[n_idx] {
                 dist[n_idx] = new_dist;
@@ -357,9 +362,59 @@ fn solve_terrain_inner(
         distance,
         predecessors: pred,
         dem: dem.clone(),
-        cell_size,
+        cell_size: config.cell_size,
         width: w,
     })
+}
+
+fn edge_cost(
+    dem: &Array2<f64>,
+    cost_field: Option<&CostField>,
+    config: TerrainConfig,
+    from: (usize, usize),
+    to: (usize, usize),
+    diagonal: bool,
+) -> Result<f64> {
+    let horiz_dist = if diagonal {
+        config.cell_size * std::f64::consts::SQRT_2
+    } else {
+        config.cell_size
+    };
+    if !horiz_dist.is_finite() {
+        return Err(Error::InvalidParameter(
+            "terrain edge distances must remain finite",
+        ));
+    }
+
+    let dz = dem[[to.0, to.1]] - dem[[from.0, from.1]];
+    let surface_dist = horiz_dist.hypot(dz);
+    if !surface_dist.is_finite() {
+        return Err(Error::InvalidParameter(
+            "terrain surface distances must remain finite",
+        ));
+    }
+
+    let slope_mult = if dz > 0.0 {
+        config.uphill_factor
+    } else if dz < 0.0 {
+        config.downhill_factor
+    } else {
+        1.0
+    };
+
+    let terrain_mult = if let Some(cf) = cost_field {
+        cf.at(to.0, to.1)
+    } else {
+        1.0
+    };
+
+    let edge_cost = surface_dist * slope_mult * terrain_mult;
+    if !edge_cost.is_finite() {
+        return Err(Error::InvalidParameter(
+            "terrain edge costs must remain finite",
+        ));
+    }
+    Ok(edge_cost)
 }
 
 const NEIGHBORS: [(isize, isize); 8] = [
@@ -519,6 +574,46 @@ mod tests {
         let config = TerrainConfig::symmetric(1.0);
         let cf = CostField::uniform(5, 5);
         assert!(solve(&dem, config, Some(&cf), (0, 0)).is_err());
+    }
+
+    #[test]
+    fn non_finite_dem_cells_are_nodata_barriers() {
+        let mut dem = flat_dem(10, 10);
+        for r in 0..10 {
+            dem[[r, 5]] = f64::NAN;
+        }
+        dem[[4, 4]] = f64::INFINITY;
+        dem[[6, 4]] = f64::NEG_INFINITY;
+
+        let config = TerrainConfig::symmetric(1.0);
+        let result = solve(&dem, config, None, (5, 0)).unwrap();
+
+        assert!(result.distance()[[5, 9]].is_infinite());
+        assert!(result.distance()[[4, 4]].is_infinite());
+        assert!(result.distance()[[6, 4]].is_infinite());
+    }
+
+    #[test]
+    fn non_finite_dem_source_rejected() {
+        let mut dem = flat_dem(5, 5);
+        dem[[2, 2]] = f64::NAN;
+        let config = TerrainConfig::symmetric(1.0);
+        assert!(solve(&dem, config, None, (2, 2)).is_err());
+    }
+
+    #[test]
+    fn non_finite_dem_target_rejected() {
+        let mut dem = flat_dem(5, 5);
+        dem[[4, 4]] = f64::INFINITY;
+        let config = TerrainConfig::symmetric(1.0);
+        assert!(solve_to(&dem, config, None, (0, 0), (4, 4)).is_err());
+    }
+
+    #[test]
+    fn overflowing_terrain_edge_cost_rejected() {
+        let dem = flat_dem(5, 5);
+        let config = TerrainConfig::symmetric(f64::MAX);
+        assert!(solve(&dem, config, None, (2, 2)).is_err());
     }
 
     #[test]
