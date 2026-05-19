@@ -13,12 +13,9 @@ use crate::error::{Error, Result};
 /// per-cell cost/slowness field.
 pub struct SolveResult {
     pub(crate) distance: Array2<f64>,
-    pub(crate) predecessors: Vec<u32>,
+    pub(crate) predecessors: Vec<Option<usize>>,
     pub(crate) width: usize,
 }
-
-/// Sentinel value indicating no predecessor (source cells, unreachable cells).
-const NO_PRED: u32 = u32::MAX;
 
 impl SolveResult {
     /// The FMM arrival time from the nearest source to each cell.
@@ -62,11 +59,11 @@ impl SolveResult {
             let r = idx / w;
             let c = idx % w;
             cells.push((r, c));
-            let pred = self.predecessors[idx];
-            if pred == NO_PRED {
+            if let Some(pred) = self.predecessors[idx] {
+                idx = pred;
+            } else {
                 break;
             }
-            idx = pred as usize;
         }
         cells.reverse();
 
@@ -161,9 +158,9 @@ fn solve_inner(
         }
     }
 
-    let n = h * w;
+    let n = grid_len(h, w)?;
     let mut dist = vec![f64::INFINITY; n];
-    let mut pred: Vec<u32> = vec![NO_PRED; n];
+    let mut pred: Vec<Option<usize>> = vec![None; n];
     let mut state = vec![State::Far; n];
     let mut heap = BinaryHeap::with_capacity(n / 4);
 
@@ -204,7 +201,12 @@ fn solve_inner(
     result_from_parts(h, w, dist, pred)
 }
 
-fn result_from_parts(h: usize, w: usize, dist: Vec<f64>, pred: Vec<u32>) -> Result<SolveResult> {
+fn result_from_parts(
+    h: usize,
+    w: usize,
+    dist: Vec<f64>,
+    pred: Vec<Option<usize>>,
+) -> Result<SolveResult> {
     let distance = Array2::from_shape_vec((h, w), dist).unwrap();
     Ok(SolveResult {
         distance,
@@ -218,7 +220,7 @@ fn update_neighbors(
     row: usize,
     col: usize,
     dist: &mut [f64],
-    pred: &mut [u32],
+    pred: &mut [Option<usize>],
     state: &mut [State],
     heap: &mut BinaryHeap<Node>,
 ) {
@@ -241,7 +243,7 @@ fn update_neighbors(
         if let Some((candidate, predecessor)) = upwind_update(cost, nr, nc, dist, state) {
             if candidate < dist[idx] {
                 dist[idx] = candidate;
-                pred[idx] = predecessor as u32;
+                pred[idx] = Some(predecessor);
                 state[idx] = State::Trial;
                 heap.push(Node {
                     cost: candidate,
@@ -317,6 +319,12 @@ fn best_axis_neighbor(
     }
 
     best
+}
+
+fn grid_len(height: usize, width: usize) -> Result<usize> {
+    height
+        .checked_mul(width)
+        .ok_or(Error::InvalidParameter("grid dimensions are too large"))
 }
 
 const CARDINAL_NEIGHBORS: [(isize, isize); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
