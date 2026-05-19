@@ -179,6 +179,9 @@ pub struct TerrainPath {
 /// Non-finite DEM elevations (`NaN`, `+inf`, `-inf`) are treated as nodata
 /// barriers. Routes never enter them, and source/early-target cells must have
 /// finite elevation.
+/// Optional scalar cost-field multipliers are averaged across each edge's two
+/// endpoint cells. Uphill/downhill factors can still make terrain routing
+/// direction-dependent when they differ.
 ///
 /// # Arguments
 /// * `dem` - Digital Elevation Model as a 2D array
@@ -322,7 +325,7 @@ fn solve_terrain_inner(
             }
 
             if let Some(cf) = cost_field {
-                if cf.at(nr, nc) <= 0.0 {
+                if cf.at(row, col) <= 0.0 || cf.at(nr, nc) <= 0.0 {
                     continue;
                 }
             }
@@ -401,7 +404,13 @@ fn edge_cost(
     };
 
     let terrain_mult = if let Some(cf) = cost_field {
-        cf.at(to.0, to.1)
+        let mult = (cf.at(from.0, from.1) + cf.at(to.0, to.1)) * 0.5;
+        if !mult.is_finite() {
+            return Err(Error::InvalidParameter(
+                "terrain cost multipliers must remain finite",
+            ));
+        }
+        mult
     } else {
         1.0
     };
@@ -543,6 +552,22 @@ mod tests {
         let result = solve(&dem, config, Some(&cf), (5, 0)).unwrap();
         let path = result.path_to(5, 9).unwrap();
         assert!(path.cells.iter().any(|&(r, c)| r == 5 && c == 5));
+    }
+
+    #[test]
+    fn scalar_cost_field_edges_are_symmetric_on_flat_terrain() {
+        let dem = flat_dem(5, 5);
+        let config = TerrainConfig::symmetric(1.0);
+        let mut cf_data = Array2::ones((5, 5));
+        cf_data[[2, 2]] = 1.0;
+        cf_data[[2, 3]] = 3.0;
+        let cf = CostField::from_array(cf_data).unwrap();
+
+        let forward = solve(&dem, config, Some(&cf), (2, 2)).unwrap();
+        let reverse = solve(&dem, config, Some(&cf), (2, 3)).unwrap();
+
+        assert!((forward.distance()[[2, 3]] - 2.0).abs() < 1e-10);
+        assert!((forward.distance()[[2, 3]] - reverse.distance()[[2, 2]]).abs() < 1e-10);
     }
 
     #[test]

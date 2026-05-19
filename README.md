@@ -8,8 +8,9 @@ Top-level `solve` computes first-order upwind FMM arrival times for:
 |grad T(x)| = C(x) = 1 / F(x)
 ```
 
-Use `eikonal::graph` for exact weighted shortest paths on an 8-neighbor grid,
-and `eikonal::terrain` for DEM-aware routing with 3D surface distances.
+Use `eikonal::graph` for exact weighted shortest paths on an 8-neighbor grid
+with symmetric endpoint-averaged scalar costs, and `eikonal::terrain` for
+DEM-aware routing with 3D surface distances.
 
 ```rust
 use eikonal::{solve, CostField};
