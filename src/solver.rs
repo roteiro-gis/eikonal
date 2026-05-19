@@ -14,13 +14,15 @@ use crate::error::{Error, Result};
 pub struct SolveResult {
     pub(crate) distance: Array2<f64>,
     pub(crate) predecessors: Vec<Option<usize>>,
+    pub(crate) finalized: Vec<bool>,
     pub(crate) width: usize,
 }
 
 impl SolveResult {
     /// The FMM arrival time from the nearest source to each cell.
     ///
-    /// Unreachable cells and impassable barriers have `f64::INFINITY`.
+    /// Unreachable, impassable, and unfinished early-termination cells have
+    /// `f64::INFINITY`.
     pub fn distance(&self) -> &Array2<f64> {
         &self.distance
     }
@@ -34,7 +36,8 @@ impl SolveResult {
     ///
     /// # Errors
     ///
-    /// Returns `NoPathFound` if the target is unreachable.
+    /// Returns `NoPathFound` if the target is unreachable or was not finalized
+    /// by an early-terminated solve.
     /// Returns `OutOfBounds` if the target is outside the grid.
     pub fn path_to(&self, target_row: usize, target_col: usize) -> Result<Path> {
         let (h, _) = self.distance.dim();
@@ -48,13 +51,14 @@ impl SolveResult {
             });
         }
 
+        let idx = target_row * w + target_col;
         let cost = self.distance[[target_row, target_col]];
-        if cost.is_infinite() {
+        if cost.is_infinite() || !self.finalized[idx] {
             return Err(Error::NoPathFound);
         }
 
         let mut cells = Vec::new();
-        let mut idx = target_row * w + target_col;
+        let mut idx = idx;
         loop {
             let r = idx / w;
             let c = idx % w;
@@ -114,9 +118,9 @@ pub fn solve_multi(cost: &CostField, sources: &[(usize, usize)]) -> Result<Solve
 
 /// Solve with early termination when `target` is accepted.
 ///
-/// The distance field may be incomplete (cells farther than the target are not
-/// guaranteed to be computed), but the target arrival time is final once the
-/// target is accepted by the FMM front.
+/// The distance field may be incomplete; cells that were not accepted before
+/// termination are reported as `f64::INFINITY`. The target arrival time is
+/// final once the target is accepted by the FMM front.
 pub fn solve_to(
     cost: &CostField,
     source: (usize, usize),
@@ -176,7 +180,7 @@ fn solve_inner(
 
     if let Some((tr, tc)) = target {
         if dist[tr * w + tc] == 0.0 {
-            return result_from_parts(h, w, dist, pred);
+            return result_from_parts(h, w, dist, pred, finalized_from_state(&state));
         }
     }
 
@@ -202,21 +206,34 @@ fn solve_inner(
         update_neighbors(cost, row, col, &mut dist, &mut pred, &mut state, &mut heap);
     }
 
-    result_from_parts(h, w, dist, pred)
+    result_from_parts(h, w, dist, pred, finalized_from_state(&state))
 }
 
 fn result_from_parts(
     h: usize,
     w: usize,
-    dist: Vec<f64>,
-    pred: Vec<Option<usize>>,
+    mut dist: Vec<f64>,
+    mut pred: Vec<Option<usize>>,
+    finalized: Vec<bool>,
 ) -> Result<SolveResult> {
+    for (idx, is_finalized) in finalized.iter().copied().enumerate() {
+        if !is_finalized {
+            dist[idx] = f64::INFINITY;
+            pred[idx] = None;
+        }
+    }
+
     let distance = Array2::from_shape_vec((h, w), dist).unwrap();
     Ok(SolveResult {
         distance,
         predecessors: pred,
+        finalized,
         width: w,
     })
+}
+
+fn finalized_from_state(state: &[State]) -> Vec<bool> {
+    state.iter().map(|s| *s == State::Accepted).collect()
 }
 
 fn update_neighbors(
@@ -454,6 +471,8 @@ mod tests {
         let path = result.path_to(5, 5).unwrap();
         assert_eq!(path.cells.first(), Some(&(0, 0)));
         assert_eq!(path.cells.last(), Some(&(5, 5)));
+        assert!(result.distance()[[0, 8]].is_infinite());
+        assert!(matches!(result.path_to(0, 8), Err(Error::NoPathFound)));
     }
 
     #[test]

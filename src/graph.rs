@@ -19,13 +19,15 @@ use crate::error::{Error, Result};
 pub struct SolveResult {
     pub(crate) distance: Array2<f64>,
     pub(crate) predecessors: Vec<Option<usize>>,
+    pub(crate) finalized: Vec<bool>,
     pub(crate) width: usize,
 }
 
 impl SolveResult {
     /// The shortest-path distance from the nearest source to each cell.
     ///
-    /// Unreachable cells have `f64::INFINITY`.
+    /// Unreachable, impassable, and unfinished early-termination cells have
+    /// `f64::INFINITY`.
     pub fn distance(&self) -> &Array2<f64> {
         &self.distance
     }
@@ -37,7 +39,8 @@ impl SolveResult {
     ///
     /// # Errors
     ///
-    /// Returns `NoPathFound` if the target is unreachable.
+    /// Returns `NoPathFound` if the target is unreachable or was not finalized
+    /// by an early-terminated solve.
     /// Returns `OutOfBounds` if the target is outside the grid.
     pub fn path_to(&self, target_row: usize, target_col: usize) -> Result<Path> {
         let (h, _) = self.distance.dim();
@@ -51,13 +54,14 @@ impl SolveResult {
             });
         }
 
+        let idx = target_row * w + target_col;
         let cost = self.distance[[target_row, target_col]];
-        if cost.is_infinite() {
+        if cost.is_infinite() || !self.finalized[idx] {
             return Err(Error::NoPathFound);
         }
 
         let mut cells = Vec::new();
-        let mut idx = target_row * w + target_col;
+        let mut idx = idx;
         loop {
             let r = idx / w;
             let c = idx % w;
@@ -120,8 +124,9 @@ pub fn solve_multi(cost: &CostField, sources: &[(usize, usize)]) -> Result<Solve
 
 /// Solve weighted shortest paths with early termination when `target` is reached.
 ///
-/// The distance field may be incomplete (cells farther than the target are
-/// not guaranteed to be computed), but the graph path to `target` is optimal.
+/// The distance field may be incomplete; cells that were not finalized before
+/// termination are reported as `f64::INFINITY`. The graph path to `target` is
+/// optimal.
 pub fn solve_to(
     cost: &CostField,
     source: (usize, usize),
@@ -240,11 +245,29 @@ fn solve_inner(
         }
     }
 
+    result_from_parts(h, w, dist, pred, visited)
+}
+
+fn result_from_parts(
+    h: usize,
+    w: usize,
+    mut dist: Vec<f64>,
+    mut pred: Vec<Option<usize>>,
+    finalized: Vec<bool>,
+) -> Result<SolveResult> {
+    for (idx, is_finalized) in finalized.iter().copied().enumerate() {
+        if !is_finalized {
+            dist[idx] = f64::INFINITY;
+            pred[idx] = None;
+        }
+    }
+
     let distance = Array2::from_shape_vec((h, w), dist).unwrap();
 
     Ok(SolveResult {
         distance,
         predecessors: pred,
+        finalized,
         width: w,
     })
 }
@@ -438,6 +461,8 @@ mod tests {
         let path = result.path_to(5, 5).unwrap();
         assert_eq!(path.cells.first(), Some(&(0, 0)));
         assert_eq!(path.cells.last(), Some(&(5, 5)));
+        assert!(result.distance()[[0, 8]].is_infinite());
+        assert!(matches!(result.path_to(0, 8), Err(Error::NoPathFound)));
     }
 
     #[test]
