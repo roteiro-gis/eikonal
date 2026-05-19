@@ -18,12 +18,9 @@ use crate::error::{Error, Result};
 /// cell from any source) and an opaque predecessor map for path extraction.
 pub struct SolveResult {
     pub(crate) distance: Array2<f64>,
-    pub(crate) predecessors: Vec<u32>,
+    pub(crate) predecessors: Vec<Option<usize>>,
     pub(crate) width: usize,
 }
-
-/// Sentinel value indicating no predecessor (source cells, unreachable cells).
-const NO_PRED: u32 = u32::MAX;
 
 impl SolveResult {
     /// The shortest-path distance from the nearest source to each cell.
@@ -65,11 +62,11 @@ impl SolveResult {
             let r = idx / w;
             let c = idx % w;
             cells.push((r, c));
-            let pred = self.predecessors[idx];
-            if pred == NO_PRED {
+            if let Some(pred) = self.predecessors[idx] {
+                idx = pred;
+            } else {
                 break;
             }
-            idx = pred as usize;
         }
         cells.reverse();
 
@@ -162,9 +159,9 @@ fn solve_inner(
         }
     }
 
-    let n = h * w;
+    let n = grid_len(h, w)?;
     let mut dist = vec![f64::INFINITY; n];
-    let mut pred: Vec<u32> = vec![NO_PRED; n];
+    let mut pred: Vec<Option<usize>> = vec![None; n];
     let mut visited = vec![false; n];
 
     let mut heap = BinaryHeap::with_capacity(n / 4);
@@ -222,7 +219,7 @@ fn solve_inner(
 
             if new_dist < dist[n_idx] {
                 dist[n_idx] = new_dist;
-                pred[n_idx] = node.idx as u32;
+                pred[n_idx] = Some(node.idx);
                 heap.push(Node {
                     cost: new_dist,
                     idx: n_idx,
@@ -238,6 +235,12 @@ fn solve_inner(
         predecessors: pred,
         width: w,
     })
+}
+
+fn grid_len(height: usize, width: usize) -> Result<usize> {
+    height
+        .checked_mul(width)
+        .ok_or(Error::InvalidParameter("grid dimensions are too large"))
 }
 
 const NEIGHBORS: [(isize, isize); 8] = [
