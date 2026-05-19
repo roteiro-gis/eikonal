@@ -12,8 +12,8 @@ use crate::error::{Error, Result};
 /// Higher values make traversal more expensive or slow the front.
 ///
 /// In the [`crate::graph`] shortest-path APIs, the same values are used as
-/// destination-cell edge multipliers:
-/// `geometric_distance * cost_at_destination`.
+/// symmetric endpoint-averaged edge multipliers:
+/// `geometric_distance * (cost_at_a + cost_at_b) / 2`.
 #[derive(Clone, Debug)]
 pub struct CostField {
     pub(crate) data: Array2<f64>,

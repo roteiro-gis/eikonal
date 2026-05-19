@@ -88,13 +88,13 @@ pub struct Path {
 /// Computes the minimum-cost path from `source` to every reachable cell using
 /// Dijkstra's algorithm on the 8-connected grid graph.
 ///
-/// Edge cost from cell A to adjacent cell B is:
-/// `euclidean_distance(A, B) * cost_field[B]`
+/// Edge cost between adjacent cells A and B is symmetric:
+/// `euclidean_distance(A, B) * (cost_field[A] + cost_field[B]) / 2`
 ///
 /// Cells with cost 0 are impassable barriers.
 ///
 /// # Arguments
-/// * `cost` - Per-cell destination cost multiplier
+/// * `cost` - Per-cell scalar cost multiplier
 /// * `source` - Source cell as `(row, col)`
 ///
 /// # Errors
@@ -203,19 +203,23 @@ fn solve_inner(
                 continue;
             }
 
-            let cell_cost = cost.at(nr, nc);
-            if cell_cost <= 0.0 {
+            let Some(edge_cost) = edge_cost(
+                cost,
+                row,
+                col,
+                nr,
+                nc,
+                dr.unsigned_abs() + dc.unsigned_abs() == 2,
+            )?
+            else {
                 continue;
-            }
-
-            let geom_dist = if dr.unsigned_abs() + dc.unsigned_abs() == 2 {
-                std::f64::consts::SQRT_2
-            } else {
-                1.0
             };
-
-            let edge_cost = geom_dist * cell_cost;
             let new_dist = dist[node.idx] + edge_cost;
+            if !new_dist.is_finite() {
+                return Err(Error::InvalidParameter(
+                    "graph path costs must remain finite",
+                ));
+            }
 
             if new_dist < dist[n_idx] {
                 dist[n_idx] = new_dist;
@@ -235,6 +239,42 @@ fn solve_inner(
         predecessors: pred,
         width: w,
     })
+}
+
+fn edge_cost(
+    cost: &CostField,
+    row: usize,
+    col: usize,
+    next_row: usize,
+    next_col: usize,
+    diagonal: bool,
+) -> Result<Option<f64>> {
+    let from_cost = cost.at(row, col);
+    let to_cost = cost.at(next_row, next_col);
+    if from_cost <= 0.0 || to_cost <= 0.0 {
+        return Ok(None);
+    }
+
+    let scalar_cost = (from_cost + to_cost) * 0.5;
+    if !scalar_cost.is_finite() {
+        return Err(Error::InvalidParameter(
+            "graph edge costs must remain finite",
+        ));
+    }
+
+    let geom_dist = if diagonal {
+        std::f64::consts::SQRT_2
+    } else {
+        1.0
+    };
+    let edge_cost = geom_dist * scalar_cost;
+    if !edge_cost.is_finite() {
+        return Err(Error::InvalidParameter(
+            "graph edge costs must remain finite",
+        ));
+    }
+
+    Ok(Some(edge_cost))
 }
 
 fn grid_len(height: usize, width: usize) -> Result<usize> {
@@ -311,6 +351,25 @@ mod tests {
         let result = solve(&cost, (0, 0)).unwrap();
         let path = result.path_to(1, 1).unwrap();
         assert!((path.cost - std::f64::consts::SQRT_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn scalar_edge_costs_are_symmetric() {
+        let data = Array2::from_shape_vec((1, 2), vec![1.0, 3.0]).unwrap();
+        let cost = CostField::from_array(data).unwrap();
+
+        let forward = solve(&cost, (0, 0)).unwrap();
+        let reverse = solve(&cost, (0, 1)).unwrap();
+
+        assert!((forward.distance()[[0, 1]] - 2.0).abs() < 1e-10);
+        assert!((forward.distance()[[0, 1]] - reverse.distance()[[0, 0]]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn overflowing_scalar_edge_cost_rejected() {
+        let data = Array2::from_shape_vec((1, 2), vec![f64::MAX, f64::MAX]).unwrap();
+        let cost = CostField::from_array(data).unwrap();
+        assert!(solve(&cost, (0, 0)).is_err());
     }
 
     #[test]
