@@ -55,18 +55,34 @@ impl CostField {
     /// Build a cost field from terrain slope.
     ///
     /// Converts slope (in radians) to a cost multiplier: cost increases with
-    /// steepness. NaN slope values become impassable (cost 0).
+    /// steepness. Non-finite slope values become impassable (cost 0).
     ///
     /// # Arguments
     /// * `slope_rad` - Slope in radians (e.g., from `terrand::slope_radians`)
     /// * `base_cost` - Cost at zero slope (typically 1.0)
     /// * `slope_factor` - How strongly slope affects cost (0 = no effect, 5 = strong)
     ///
+    /// # Errors
+    ///
+    /// Returns an error if `base_cost` or `slope_factor` is negative or
+    /// non-finite, or if the computed costs overflow to non-finite values.
+    ///
     /// With the `parallel` feature enabled, uses Rayon for large grids.
-    pub fn from_slope(slope_rad: &Array2<f64>, base_cost: f64, slope_factor: f64) -> Self {
+    pub fn from_slope(slope_rad: &Array2<f64>, base_cost: f64, slope_factor: f64) -> Result<Self> {
+        if base_cost < 0.0 || !base_cost.is_finite() {
+            return Err(Error::InvalidParameter(
+                "base_cost must be finite and non-negative",
+            ));
+        }
+        if slope_factor < 0.0 || !slope_factor.is_finite() {
+            return Err(Error::InvalidParameter(
+                "slope_factor must be finite and non-negative",
+            ));
+        }
+
         let (h, w) = slope_rad.dim();
         let compute = |s: f64| -> f64 {
-            if s.is_nan() {
+            if !s.is_finite() {
                 0.0
             } else {
                 base_cost + slope_factor * s.tan().abs()
@@ -93,7 +109,7 @@ impl CostField {
             slope_rad.mapv(compute)
         };
 
-        Self { data }
+        Self::from_array(data)
     }
 
     /// Dimensions as (height, width).
@@ -161,7 +177,7 @@ mod tests {
     #[test]
     fn from_slope_zero_is_base() {
         let slope = Array2::zeros((5, 5));
-        let cf = CostField::from_slope(&slope, 1.0, 3.0);
+        let cf = CostField::from_slope(&slope, 1.0, 3.0).unwrap();
         assert!((cf.at(2, 2) - 1.0).abs() < 1e-10);
     }
 
@@ -169,7 +185,7 @@ mod tests {
     fn from_slope_steep_is_expensive() {
         let mut slope = Array2::zeros((5, 5));
         slope[[2, 2]] = 0.7; // ~40 degrees
-        let cf = CostField::from_slope(&slope, 1.0, 2.0);
+        let cf = CostField::from_slope(&slope, 1.0, 2.0).unwrap();
         assert!(cf.at(2, 2) > cf.at(0, 0));
     }
 
@@ -177,7 +193,39 @@ mod tests {
     fn from_slope_nan_is_impassable() {
         let mut slope = Array2::zeros((5, 5));
         slope[[2, 2]] = f64::NAN;
-        let cf = CostField::from_slope(&slope, 1.0, 2.0);
+        let cf = CostField::from_slope(&slope, 1.0, 2.0).unwrap();
         assert_eq!(cf.at(2, 2), 0.0);
+    }
+
+    #[test]
+    fn from_slope_infinite_slope_is_impassable() {
+        let mut slope = Array2::zeros((5, 5));
+        slope[[2, 2]] = f64::INFINITY;
+        slope[[3, 3]] = f64::NEG_INFINITY;
+        let cf = CostField::from_slope(&slope, 1.0, 2.0).unwrap();
+        assert_eq!(cf.at(2, 2), 0.0);
+        assert_eq!(cf.at(3, 3), 0.0);
+    }
+
+    #[test]
+    fn from_slope_invalid_base_cost_rejected() {
+        let slope = Array2::zeros((5, 5));
+        assert!(CostField::from_slope(&slope, -1.0, 2.0).is_err());
+        assert!(CostField::from_slope(&slope, f64::INFINITY, 2.0).is_err());
+        assert!(CostField::from_slope(&slope, f64::NAN, 2.0).is_err());
+    }
+
+    #[test]
+    fn from_slope_invalid_slope_factor_rejected() {
+        let slope = Array2::zeros((5, 5));
+        assert!(CostField::from_slope(&slope, 1.0, -2.0).is_err());
+        assert!(CostField::from_slope(&slope, 1.0, f64::INFINITY).is_err());
+        assert!(CostField::from_slope(&slope, 1.0, f64::NAN).is_err());
+    }
+
+    #[test]
+    fn from_slope_overflow_rejected() {
+        let slope = Array2::from_elem((5, 5), 1.0);
+        assert!(CostField::from_slope(&slope, f64::MAX, f64::MAX).is_err());
     }
 }
