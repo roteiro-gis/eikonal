@@ -63,19 +63,25 @@ impl TerrainConfig {
 pub struct TerrainResult {
     pub(crate) distance: Array2<f64>,
     pub(crate) predecessors: Vec<Option<usize>>,
+    pub(crate) finalized: Vec<bool>,
     pub(crate) dem: Array2<f64>,
     pub(crate) cell_size: f64,
     pub(crate) width: usize,
 }
 
 impl TerrainResult {
-    /// The distance (minimum cumulative cost) from the nearest source to each cell.
+    /// The distance (minimum cumulative cost) from the nearest source to each
+    /// finalized cell. Unfinished early-termination cells have `f64::INFINITY`.
     pub fn distance(&self) -> &Array2<f64> {
         &self.distance
     }
 
-    /// Extract the shortest path to `(target_row, target_col)` with full terrain
-    /// statistics: surface distance, elevation profile, ascent, and descent.
+    /// Extract the shortest path to `(target_row, target_col)` with full
+    /// terrain statistics: surface distance, elevation profile, ascent, and
+    /// descent.
+    ///
+    /// Returns `NoPathFound` if the target is unreachable or was not finalized
+    /// by an early-terminated solve.
     pub fn path_to(&self, target_row: usize, target_col: usize) -> Result<TerrainPath> {
         let (h, _) = self.distance.dim();
         let w = self.width;
@@ -88,13 +94,14 @@ impl TerrainResult {
             });
         }
 
+        let idx = target_row * w + target_col;
         let cost = self.distance[[target_row, target_col]];
-        if cost.is_infinite() {
+        if cost.is_infinite() || !self.finalized[idx] {
             return Err(Error::NoPathFound);
         }
 
         let mut cells = Vec::new();
-        let mut idx = target_row * w + target_col;
+        let mut idx = idx;
         loop {
             let r = idx / w;
             let c = idx % w;
@@ -213,6 +220,9 @@ pub fn solve_multi(
 }
 
 /// Solve with early termination when `target` is reached.
+///
+/// The distance field may be incomplete; cells that were not finalized before
+/// termination are reported as `f64::INFINITY`.
 pub fn solve_to(
     dem: &Array2<f64>,
     config: TerrainConfig,
@@ -370,13 +380,33 @@ fn solve_terrain_inner(
         }
     }
 
+    result_from_parts(h, w, dist, pred, visited, dem, config.cell_size)
+}
+
+fn result_from_parts(
+    h: usize,
+    w: usize,
+    mut dist: Vec<f64>,
+    mut pred: Vec<Option<usize>>,
+    finalized: Vec<bool>,
+    dem: &Array2<f64>,
+    cell_size: f64,
+) -> Result<TerrainResult> {
+    for (idx, is_finalized) in finalized.iter().copied().enumerate() {
+        if !is_finalized {
+            dist[idx] = f64::INFINITY;
+            pred[idx] = None;
+        }
+    }
+
     let distance = Array2::from_shape_vec((h, w), dist).unwrap();
 
     Ok(TerrainResult {
         distance,
         predecessors: pred,
+        finalized,
         dem: dem.clone(),
-        cell_size: config.cell_size,
+        cell_size,
         width: w,
     })
 }
@@ -697,6 +727,8 @@ mod tests {
         let path = result.path_to(10, 10).unwrap();
         assert_eq!(path.cells.first(), Some(&(0, 0)));
         assert_eq!(path.cells.last(), Some(&(10, 10)));
+        assert!(result.distance()[[0, 15]].is_infinite());
+        assert!(matches!(result.path_to(0, 15), Err(Error::NoPathFound)));
     }
 
     #[test]
