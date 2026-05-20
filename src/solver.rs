@@ -185,7 +185,7 @@ fn solve_inner(
     }
 
     for &(sr, sc) in sources {
-        update_neighbors(cost, sr, sc, &mut dist, &mut pred, &mut state, &mut heap);
+        update_neighbors(cost, sr, sc, &mut dist, &mut pred, &mut state, &mut heap)?;
     }
 
     while let Some(node) = heap.pop() {
@@ -203,7 +203,7 @@ fn solve_inner(
 
         let row = node.idx / w;
         let col = node.idx % w;
-        update_neighbors(cost, row, col, &mut dist, &mut pred, &mut state, &mut heap);
+        update_neighbors(cost, row, col, &mut dist, &mut pred, &mut state, &mut heap)?;
     }
 
     result_from_parts(h, w, dist, pred, finalized_from_state(&state))
@@ -244,7 +244,7 @@ fn update_neighbors(
     pred: &mut [Option<usize>],
     state: &mut [State],
     heap: &mut BinaryHeap<Node>,
-) {
+) -> Result<()> {
     let (h, w) = cost.dim();
     for &(dr, dc) in &CARDINAL_NEIGHBORS {
         let nr = row as isize + dr;
@@ -262,6 +262,11 @@ fn update_neighbors(
         }
 
         if let Some((candidate, predecessor)) = upwind_update(cost, nr, nc, dist, state) {
+            if !candidate.is_finite() {
+                return Err(Error::InvalidParameter(
+                    "FMM arrival times must remain finite",
+                ));
+            }
             if candidate < dist[idx] {
                 dist[idx] = candidate;
                 pred[idx] = Some(predecessor);
@@ -273,6 +278,7 @@ fn update_neighbors(
             }
         }
     }
+    Ok(())
 }
 
 fn upwind_update(
@@ -431,6 +437,19 @@ mod tests {
         let cost = CostField::from_array(data).unwrap();
         let result = solve(&cost, (2, 2)).unwrap();
         assert_close(result.distance()[[2, 4]], 4.0);
+    }
+
+    #[test]
+    fn overflowing_arrival_time_rejected() {
+        let data = Array2::from_shape_vec((1, 3), vec![1.0, f64::MAX, f64::MAX]).unwrap();
+        let cost = CostField::from_array(data).unwrap();
+
+        assert!(matches!(
+            solve(&cost, (0, 0)),
+            Err(Error::InvalidParameter(
+                "FMM arrival times must remain finite"
+            ))
+        ));
     }
 
     #[test]
