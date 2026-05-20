@@ -16,4 +16,4 @@ rayon = { version = "1", optional = true }
 
 [features]
 default = []
-parallel = ["rayon"]
+parallel = ["dep:rayon"]
