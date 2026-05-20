@@ -10,50 +10,63 @@ use crate::error::{Error, Result};
 #[derive(Clone, Copy, Debug)]
 pub struct TerrainConfig {
     /// Cell size in map units (meters). Must be positive.
-    pub cell_size: f64,
+    cell_size: f64,
     /// Uphill cost multiplier. 1.0 = no penalty, >1.0 = penalize ascent.
-    pub uphill_factor: f64,
+    uphill_factor: f64,
     /// Downhill cost multiplier. 1.0 = no penalty, >1.0 = penalize descent.
-    pub downhill_factor: f64,
+    downhill_factor: f64,
 }
 
 impl TerrainConfig {
-    /// Symmetric terrain config (no directional preference).
-    pub fn symmetric(cell_size: f64) -> Self {
-        Self {
+    /// Create a terrain config from explicit cell size and slope factors.
+    ///
+    /// All values must be finite and positive.
+    pub fn new(cell_size: f64, uphill_factor: f64, downhill_factor: f64) -> Result<Self> {
+        validate_positive_finite(cell_size, "cell_size must be finite and positive")?;
+        validate_positive_finite(uphill_factor, "uphill_factor must be finite and positive")?;
+        validate_positive_finite(
+            downhill_factor,
+            "downhill_factor must be finite and positive",
+        )?;
+
+        Ok(Self {
             cell_size,
-            uphill_factor: 1.0,
-            downhill_factor: 1.0,
-        }
+            uphill_factor,
+            downhill_factor,
+        })
+    }
+
+    /// Symmetric terrain config (no directional preference).
+    pub fn symmetric(cell_size: f64) -> Result<Self> {
+        Self::new(cell_size, 1.0, 1.0)
     }
 
     /// Hiking-optimized config: uphill is harder, downhill is slightly easier.
-    pub fn hiking(cell_size: f64) -> Self {
-        Self {
-            cell_size,
-            uphill_factor: 2.0,
-            downhill_factor: 0.8,
-        }
+    pub fn hiking(cell_size: f64) -> Result<Self> {
+        Self::new(cell_size, 2.0, 0.8)
     }
 
-    fn validate(&self) -> Result<()> {
-        if !self.cell_size.is_finite() || self.cell_size <= 0.0 {
-            return Err(Error::InvalidParameter(
-                "cell_size must be finite and positive",
-            ));
-        }
-        if !self.uphill_factor.is_finite() || self.uphill_factor <= 0.0 {
-            return Err(Error::InvalidParameter(
-                "uphill_factor must be finite and positive",
-            ));
-        }
-        if !self.downhill_factor.is_finite() || self.downhill_factor <= 0.0 {
-            return Err(Error::InvalidParameter(
-                "downhill_factor must be finite and positive",
-            ));
-        }
-        Ok(())
+    /// Cell size in map units.
+    pub fn cell_size(&self) -> f64 {
+        self.cell_size
     }
+
+    /// Uphill cost multiplier.
+    pub fn uphill_factor(&self) -> f64 {
+        self.uphill_factor
+    }
+
+    /// Downhill cost multiplier.
+    pub fn downhill_factor(&self) -> f64 {
+        self.downhill_factor
+    }
+}
+
+fn validate_positive_finite(value: f64, message: &'static str) -> Result<()> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(Error::InvalidParameter(message));
+    }
+    Ok(())
 }
 
 /// Result of terrain-aware solving.
@@ -240,11 +253,9 @@ fn solve_terrain_inner(
     sources: &[(usize, usize)],
     target: Option<(usize, usize)>,
 ) -> Result<TerrainResult> {
-    config.validate()?;
-
     let (h, w) = dem.dim();
-    if h < 3 || w < 3 {
-        return Err(Error::InvalidParameter("DEM must be at least 3x3"));
+    if h == 0 || w == 0 {
+        return Err(Error::InvalidParameter("DEM must be non-empty"));
     }
     if sources.is_empty() {
         return Err(Error::InvalidParameter("at least one source is required"));
@@ -522,7 +533,7 @@ mod tests {
     #[test]
     fn flat_terrain_geodesic_equals_euclidean() {
         let dem = flat_dem(20, 20);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve(&dem, config, None, (0, 0)).unwrap();
         let path = result.path_to(0, 10).unwrap();
         // On flat terrain: surface distance = projected distance
@@ -534,7 +545,7 @@ mod tests {
     #[test]
     fn uphill_path_has_ascent() {
         let dem = sloped_dem(20, 20);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve(&dem, config, None, (10, 0)).unwrap();
         let path = result.path_to(10, 19).unwrap();
         assert!(path.total_ascent > 0.0);
@@ -544,7 +555,7 @@ mod tests {
     #[test]
     fn downhill_path_has_descent() {
         let dem = sloped_dem(20, 20);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve(&dem, config, None, (10, 19)).unwrap();
         let path = result.path_to(10, 0).unwrap();
         assert!(path.total_descent > 0.0);
@@ -553,12 +564,8 @@ mod tests {
     #[test]
     fn uphill_penalty_increases_cost() {
         let dem = sloped_dem(20, 20);
-        let sym = TerrainConfig::symmetric(1.0);
-        let penalized = TerrainConfig {
-            cell_size: 1.0,
-            uphill_factor: 3.0,
-            downhill_factor: 1.0,
-        };
+        let sym = TerrainConfig::symmetric(1.0).unwrap();
+        let penalized = TerrainConfig::new(1.0, 3.0, 1.0).unwrap();
 
         let r_sym = solve(&dem, sym, None, (10, 0)).unwrap();
         let r_pen = solve(&dem, penalized, None, (10, 0)).unwrap();
@@ -571,7 +578,7 @@ mod tests {
     #[test]
     fn cost_field_obstacle_blocks() {
         let dem = flat_dem(10, 10);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let mut cf_data = Array2::ones((10, 10));
         for r in 0..10 {
             cf_data[[r, 5]] = 0.0;
@@ -585,14 +592,14 @@ mod tests {
     #[test]
     fn empty_sources_rejected() {
         let dem = flat_dem(5, 5);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         assert!(solve_multi(&dem, config, None, &[]).is_err());
     }
 
     #[test]
     fn cost_field_impassable_source_rejected() {
         let dem = flat_dem(5, 5);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let mut cf_data = Array2::ones((5, 5));
         cf_data[[2, 2]] = 0.0;
         let cf = CostField::from_array(cf_data).unwrap();
@@ -602,7 +609,7 @@ mod tests {
     #[test]
     fn cost_field_obstacle_with_gap() {
         let dem = flat_dem(10, 10);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let mut cf_data = Array2::ones((10, 10));
         for r in 0..10 {
             cf_data[[r, 5]] = 0.0;
@@ -617,7 +624,7 @@ mod tests {
     #[test]
     fn scalar_cost_field_edges_are_symmetric_on_flat_terrain() {
         let dem = flat_dem(5, 5);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let mut cf_data = Array2::ones((5, 5));
         cf_data[[2, 2]] = 1.0;
         cf_data[[2, 3]] = 3.0;
@@ -635,7 +642,7 @@ mod tests {
         let dem = Array2::from_shape_fn((20, 20), |(r, c)| {
             ((r as f64) * 0.3).sin() * 10.0 + c as f64
         });
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve(&dem, config, None, (10, 0)).unwrap();
         let path = result.path_to(10, 19).unwrap();
         for i in 1..path.elevation_profile.len() {
@@ -644,23 +651,46 @@ mod tests {
     }
 
     #[test]
-    fn too_small_dem_rejected() {
-        let dem = Array2::zeros((2, 5));
-        let config = TerrainConfig::symmetric(1.0);
-        assert!(solve(&dem, config, None, (0, 0)).is_err());
+    fn small_dems_are_supported() {
+        let single = Array2::zeros((1, 1));
+        let config = TerrainConfig::symmetric(1.0).unwrap();
+        let result = solve(&single, config, None, (0, 0)).unwrap();
+        let path = result.path_to(0, 0).unwrap();
+        assert_eq!(path.cells, vec![(0, 0)]);
+
+        let strip = Array2::zeros((2, 5));
+        let result = solve(&strip, config, None, (0, 0)).unwrap();
+        let path = result.path_to(1, 4).unwrap();
+        assert_eq!(path.cells.first(), Some(&(0, 0)));
+        assert_eq!(path.cells.last(), Some(&(1, 4)));
     }
 
     #[test]
-    fn invalid_cell_size_rejected() {
-        let dem = flat_dem(5, 5);
-        let config = TerrainConfig::symmetric(0.0);
-        assert!(solve(&dem, config, None, (0, 0)).is_err());
+    fn empty_dem_rejected() {
+        let dem = Array2::zeros((0, 5));
+        let config = TerrainConfig::symmetric(1.0).unwrap();
+        assert!(matches!(
+            solve(&dem, config, None, (0, 0)),
+            Err(Error::InvalidParameter("DEM must be non-empty"))
+        ));
+    }
+
+    #[test]
+    fn invalid_config_values_rejected() {
+        assert!(matches!(
+            TerrainConfig::symmetric(0.0),
+            Err(Error::InvalidParameter(
+                "cell_size must be finite and positive"
+            ))
+        ));
+        assert!(TerrainConfig::new(1.0, f64::NAN, 1.0).is_err());
+        assert!(TerrainConfig::new(1.0, 1.0, f64::INFINITY).is_err());
     }
 
     #[test]
     fn dimension_mismatch_rejected() {
         let dem = flat_dem(10, 10);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let cf = CostField::uniform(5, 5);
         assert!(solve(&dem, config, Some(&cf), (0, 0)).is_err());
     }
@@ -674,7 +704,7 @@ mod tests {
         dem[[4, 4]] = f64::INFINITY;
         dem[[6, 4]] = f64::NEG_INFINITY;
 
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve(&dem, config, None, (5, 0)).unwrap();
 
         assert!(result.distance()[[5, 9]].is_infinite());
@@ -686,7 +716,7 @@ mod tests {
     fn non_finite_dem_source_rejected() {
         let mut dem = flat_dem(5, 5);
         dem[[2, 2]] = f64::NAN;
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         assert!(solve(&dem, config, None, (2, 2)).is_err());
     }
 
@@ -694,14 +724,14 @@ mod tests {
     fn non_finite_dem_target_rejected() {
         let mut dem = flat_dem(5, 5);
         dem[[4, 4]] = f64::INFINITY;
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         assert!(solve_to(&dem, config, None, (0, 0), (4, 4)).is_err());
     }
 
     #[test]
     fn overflowing_terrain_edge_cost_rejected() {
         let dem = flat_dem(5, 5);
-        let config = TerrainConfig::symmetric(f64::MAX);
+        let config = TerrainConfig::symmetric(f64::MAX).unwrap();
         assert!(solve(&dem, config, None, (2, 2)).is_err());
     }
 
@@ -710,7 +740,7 @@ mod tests {
         // On a slope, hiking config should prefer traversing along contours
         // rather than straight uphill
         let dem = Array2::from_shape_fn((20, 20), |(r, _)| r as f64 * 20.0);
-        let config = TerrainConfig::hiking(1.0);
+        let config = TerrainConfig::hiking(1.0).unwrap();
         let result = solve(&dem, config, None, (0, 0)).unwrap();
         // Going to (0, 19) should be cheap (same elevation)
         // Going to (19, 0) should be expensive (straight uphill)
@@ -722,7 +752,7 @@ mod tests {
     #[test]
     fn solve_to_early_termination() {
         let dem = flat_dem(50, 50);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve_to(&dem, config, None, (0, 0), (10, 10)).unwrap();
         let path = result.path_to(10, 10).unwrap();
         assert_eq!(path.cells.first(), Some(&(0, 0)));
@@ -734,7 +764,7 @@ mod tests {
     #[test]
     fn multi_source_terrain() {
         let dem = flat_dem(20, 20);
-        let config = TerrainConfig::symmetric(1.0);
+        let config = TerrainConfig::symmetric(1.0).unwrap();
         let result = solve_multi(&dem, config, None, &[(0, 0), (19, 19)]).unwrap();
         assert_eq!(result.distance()[[0, 0]], 0.0);
         assert_eq!(result.distance()[[19, 19]], 0.0);

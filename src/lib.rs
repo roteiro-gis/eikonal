@@ -60,7 +60,7 @@
 //!     100.0 * (-(dr * dr + dc * dc) / 200.0).exp()
 //! });
 //!
-//! let config = TerrainConfig::hiking(30.0); // 30m cells
+//! let config = TerrainConfig::hiking(30.0).unwrap(); // 30m cells
 //! let result = terrain::solve(&dem, config, None, (0, 0)).unwrap();
 //! let path = result.path_to(49, 49).unwrap();
 //!
