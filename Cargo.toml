@@ -12,8 +12,9 @@ categories = ["science::geo", "algorithms"]
 [dependencies]
 ndarray = "0.17"
 thiserror = "2"
-rayon = { version = "1", optional = true }
+rayon = { version = "=1.10.0", optional = true }
+rayon-core = { version = "=1.12.1", optional = true }
 
 [features]
 default = []
-parallel = ["dep:rayon"]
+parallel = ["dep:rayon", "dep:rayon-core"]
